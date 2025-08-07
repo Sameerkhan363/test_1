@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Face & Voice Attendance</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    video, canvas { display: block; margin-top: 10px; }
+    #status { margin-top: 20px; font-weight: bold; color: green; }
+    #prompt { font-weight: bold; color: red; margin-top: 10px; }
+    #details { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Face & Voice Attendance System</h1>
+  <label>Backend URL: <input type="text" id="backendUrl" value="http://82.180.147.92:5000"></label><br>
+  <label>API Key: <input type="text" id="apiKey" value="6234ccb2c9b334d026e72e60b1d24aef"></label><br>
+
+  <video id="video" width="320" height="240" autoplay></video>
+  <canvas id="canvas" width="320" height="240" style="display: none;"></canvas>
+
+  <div id="status"></div>
+  <div id="prompt"></div>
+  <div id="details"></div>
+
+  <script>
+    let currentLatitude = null;
+    let currentLongitude = null;
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const statusDiv = document.getElementById('status');
+    const promptDiv = document.getElementById('prompt');
+    const detailsDiv = document.getElementById('details');
+
+    const backendUrl = document.getElementById('backendUrl').value;
+    const apiKey = document.getElementById('apiKey').value;
+
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        video.srcObject = stream;
+  navigator.geolocation.getCurrentPosition(
+  position => {
+    currentLatitude = position.coords.latitude;
+    currentLongitude = position.coords.longitude;
+    setTimeout(captureFace, 3000);  // ⏱️ Delay to allow camera to settle
+  },
+  error => {
+    console.error("Location error", error);
+    statusDiv.innerText = "Could not get location";
+  }
+  );
+      });
+
+    function captureFace() {
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(blob => sendFaceImage(blob), 'image/jpeg');
+    }
+
+    function sendFaceImage(blob) {
+      statusDiv.innerText = "Recognizing face...";
+      const formData = new FormData();
+      formData.append("image", blob);
+      formData.append("latitude", currentLatitude || 0);
+      formData.append("longitude", currentLongitude || 0);
+      fetch(`${backendUrl}/upload-face`, {
+        method: "POST",
+        body: formData
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            statusDiv.innerText = `Error: ${data.error}`;
+            return;
+          }
+
+          statusDiv.innerText = data.status;
+          const now = new Date().toLocaleTimeString();
+          detailsDiv.innerHTML = `Welcome, <b>${data.employeeName}</b><br>` +
+                       `Time: ${now}<br>` +
+                       `Employee Number: ${data.employeeNumber}<br>` +
+                       `Designation: ${data.role || "N/A"}<br>` +
+                       `Site: ${data.siteCodeWithName || "N/A"}<br>`;
+
+
+          if (data.need_voice_input) {
+            promptDiv.innerText = "Please speak now...";
+            recordVoice(data.employeeNumber, data.scenario);
+          } else {
+            promptDiv.innerText = "";
+          }
+        })
+        .catch(err => {
+          statusDiv.innerText = "Failed to fetch face data";
+          console.error(err);
+        });
+    }
+
+    function recordVoice(employeeNumber, scenario) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          const mediaRecorder = new MediaRecorder(stream);
+          const chunks = [];
+
+          mediaRecorder.ondataavailable = e => chunks.push(e.data);
+
+          mediaRecorder.onstop = () => {
+            const blob = new Blob(chunks, { type: 'audio/wav' });
+            const formData = new FormData();
+            formData.append("voice", blob);
+            formData.append("employeeNumber", employeeNumber);
+            formData.append("api_key", apiKey);
+            formData.append("scenario", scenario); // <-- Add this line
+            formData.append("latitude", currentLatitude || 0);
+            formData.append("longitude", currentLongitude || 0);
+            statusDiv.innerText = "Processing voice...";
+            fetch(`${backendUrl}/upload-voice`, {
+              method: "POST",
+              body: formData
+            })
+              .then(res => res.json())
+              .then(data => {
+  if (data.error) {
+    statusDiv.innerText = "Voice Error: " + data.error;
+    return;
+  }
+
+  statusDiv.innerText = data.status;
+
+  if (data.reason) {
+    promptDiv.innerHTML = `<b>Reason:</b> ${data.reason}`;
+  } else if (data.need_reason_input) {
+    promptDiv.innerText = "Please speak your reason for early checkout...";
+    // ✅ Re-trigger voice recording for the reason
+    recordVoice(employeeNumber, "early_checkout_reason");
+  } else {
+    promptDiv.innerText = "";
+  }
+  })
+              .catch(err => {
+                statusDiv.innerText = "Voice processing failed.";
+                console.error(err);
+              });
+          };
+
+          mediaRecorder.start();
+          setTimeout(() => mediaRecorder.stop(), 4000);
+        })
+        .catch(err => {
+          statusDiv.innerText = "Microphone error.";
+          console.error(err);
+        });
+    }
+  </script>
+</body>
+</html>
